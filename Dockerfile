@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6-dev \
     libxml2-dev \
     libxslt-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python dependencies (own layer — cached unless requirements.txt changes)
