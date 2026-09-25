@@ -73,10 +73,10 @@ _SEL_TITLE = ".Article-title"                       # ← CSS SELECTOR
 _SEL_PRICE = ".userPrice"                           # ← CSS SELECTOR
 #   alt candidates: ".Article-price", "[itemprop='price']", ".price-value"
 
-# Canonical product URL — the <a> that wraps or is inside the card
-# We look for an <a> tag with this class; fall back to any <a> in the card.
-_SEL_URL = "a.Article-itemWrapper"                  # ← CSS SELECTOR
-#   alt candidates: "a.product-link", ".Article-title a", "a[href*='/p/']"
+# Canonical product URL — the <a> that wraps the product title.
+# The href is safely nested inside the title anchor, bypassing JS-obfuscated links.
+_SEL_URL = "a.Article-title"                       # ← CSS SELECTOR (confirmed via live DOM)
+#   alt candidates: "a.product-link", "a[href*='/p/']"
 
 
 class FnacPtScraper(BaseScraperStrategy):
