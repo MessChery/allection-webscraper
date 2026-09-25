@@ -70,10 +70,13 @@ class ScraperManager:
         # Each entry is a fully-initialised BaseScraperStrategy instance.
         # Add or remove strategies here as the microservice grows.
         self._registry: list[BaseScraperStrategy] = [
-            # Shopify "hidden" JSON API — independent vinyl store demo
-            ShopifyScraper("loja-vinil.pt", self._client),
+            # ── Shopify "hidden" JSON API ─────────────────────────────────
+            # Temporarily disabled: loja-vinil.pt is a placeholder domain
+            # that generates DNS ConnectError noise during FNAC.pt debugging.
+            # Re-enable with a real Shopify store domain when ready.
+            # ShopifyScraper("loja-vinil.pt", self._client),
 
-            # FNAC.pt enterprise Algolia XHR API
+            # ── FNAC.pt enterprise HTML scraper ──────────────────────────
             FnacPtScraper(self._client),
         ]
 

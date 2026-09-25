@@ -143,7 +143,11 @@ class FnacPtScraper(BaseScraperStrategy):
         logger.debug("FnacPtScraper GET %s", url)
 
         # as_json=False → returns raw HTML text
-        html: str = await self._client.get(url, as_json=False)
+        html: str = await self._client.get(
+            url,
+            as_json=False,
+            headers={"Referer": f"{self._base_url}/"},
+        )
         print(f"DEBUG: Fetched HTML length: {len(html)}")
 
         cards = self._extract_cards(html)

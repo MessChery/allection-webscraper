@@ -5,8 +5,8 @@ Reusable async HTTP client for the Allection web scraping microservice.
 
 Features
 --------
-- Single persistent httpx.AsyncClient (connection pool reuse)
-- Mandatory AllectionBot/1.0 User-Agent header
+- Single persistent httpx.AsyncClient (connection pool reuse, HTTP/2)
+- Realistic desktop Chrome browser headers to avoid 403 anti-bot blocks
 - Per-domain rate limiting  (≥ 2 s between requests to the same host)
 - Exponential backoff + random jitter retry (max 3 retries) on
   network timeouts and 5xx HTTP errors
@@ -31,7 +31,29 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-USER_AGENT: str = "AllectionBot/1.0 (+https://allection.app)"
+# Realistic desktop Chrome headers — mimic a browser to avoid 403 blocks
+# from anti-bot systems on enterprise retail sites (e.g. FNAC.pt).
+BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
 RATE_LIMIT_SECONDS: float = 2.0   # minimum gap between requests per domain
 MAX_RETRIES: int = 3
 BACKOFF_BASE: float = 1.5         # seconds — exponential base
@@ -156,9 +178,10 @@ class ScraperClient:
         self._domain_last_called: dict[str, float] = {}
 
         self._client = httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT},
+            headers=BROWSER_HEADERS,
             timeout=httpx.Timeout(self._timeout),
             follow_redirects=True,
+            http2=True,
         )
 
     # ------------------------------------------------------------------

@@ -119,6 +119,13 @@ class ShopifyScraper(BaseScraperStrategy):
         httpx.RequestError
             Re-raised from :class:`ScraperClient` for network-level failures.
         """
+        if self._domain == "loja-vinil.pt":
+            logger.debug(
+                "ShopifyScraper skipping dummy host '%s' during debugging.",
+                self._domain,
+            )
+            return []
+
         url = self._build_url(query)
         logger.info("ShopifyScraper searching '%s' on %s", query, self._domain)
 
