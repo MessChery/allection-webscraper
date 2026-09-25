@@ -31,6 +31,7 @@ WORKDIR /app
 # still inherits them but the apt cache is purged to minimise layer size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    libc6-dev \
     libxml2-dev \
     libxslt-dev \
     && rm -rf /var/lib/apt/lists/*
