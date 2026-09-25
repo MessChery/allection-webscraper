@@ -8,5 +8,9 @@ uvicorn[standard]==0.34.3        # [standard] pulls in uvloop + httptools
 # ── HTTP client (async, used by ScraperClient) ────────────────────────────
 httpx==0.28.1
 
+# ── HTML parsing (used by FnacPtScraper) ─────────────────────────────────
+beautifulsoup4==4.13.4
+lxml==5.3.2
+
 # ── Data validation (used by ScrapedItem model) ───────────────────────────
 pydantic==2.13.5
