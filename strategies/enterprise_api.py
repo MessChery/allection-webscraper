@@ -144,6 +144,7 @@ class FnacPtScraper(BaseScraperStrategy):
 
         # as_json=False → returns raw HTML text
         html: str = await self._client.get(url, as_json=False)
+        print(f"DEBUG: Fetched HTML length: {len(html)}")
 
         cards = self._extract_cards(html)
         logger.debug(
@@ -195,6 +196,7 @@ class FnacPtScraper(BaseScraperStrategy):
         """
         soup = BeautifulSoup(html, "lxml")
         cards = soup.select(_SEL_PRODUCT_CARD)   # ← CSS SELECTOR applied here
+        print(f"DEBUG: Found {len(cards)} cards using {_SEL_PRODUCT_CARD}")
 
         if not cards:
             logger.warning(
@@ -271,6 +273,7 @@ class FnacPtScraper(BaseScraperStrategy):
             )
 
         except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            print(f"DEBUG: Card parse failed: {exc}")
             logger.warning(
                 "FnacPtScraper: skipping malformed product card on %s "
                 "— %s: %s",
