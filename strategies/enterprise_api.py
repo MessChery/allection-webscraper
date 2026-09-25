@@ -124,16 +124,11 @@ class FnacPtScraper(BaseScraperStrategy):
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
                 try:
-                    await page.wait_for_selector(_SEL_PRODUCT_CARD, timeout=15_000)
-                except PlaywrightTimeoutError:
-                    logger.debug(
-                        "Timed out waiting for %r; falling back to networkidle.",
-                        _SEL_PRODUCT_CARD,
-                    )
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=10_000)
-                    except PlaywrightTimeoutError:
-                        pass
+                    await page.wait_for_selector('.Article-item', timeout=10000)
+                except Exception:
+                    print(f"DEBUG: Page Title: {await page.title()}")
+                    print(f"DEBUG: Body Text: {(await page.inner_text('body'))[:500]}")
+                    await page.screenshot(path="/app/debug_fnac.png")
 
                 html: str = await page.content()
             finally:
