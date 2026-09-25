@@ -62,7 +62,7 @@ _SEARCH_URL = (
 # Every constant is annotated with  # ← CSS SELECTOR  for quick discovery.
 
 # Outer container — one per product card on the results page
-_SEL_PRODUCT_CARD = "li.Article-item"               # ← CSS SELECTOR
+_SEL_PRODUCT_CARD = ".Article-item"                  # ← CSS SELECTOR
 #   alt candidates: "article.product-item", ".product-list .item"
 
 # Product title — the human-readable name of the product

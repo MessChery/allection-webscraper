@@ -5,8 +5,8 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.3        # [standard] pulls in uvloop + httptools
 
-# ── HTTP client (async, used by ScraperClient) ────────────────────────────
-httpx[http2]==0.28.1             # [http2] pulls in the h2 library for HTTP/2 negotiation
+# ── HTTP client (async TLS-impersonating client, used by ScraperClient) ──
+curl_cffi>=0.16.0
 
 # ── HTML parsing (used by FnacPtScraper) ─────────────────────────────────
 beautifulsoup4==4.13.4

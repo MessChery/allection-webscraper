@@ -5,8 +5,8 @@ Reusable async HTTP client for the Allection web scraping microservice.
 
 Features
 --------
-- Single persistent httpx.AsyncClient (connection pool reuse, HTTP/2)
-- Realistic desktop Chrome browser headers to avoid 403 anti-bot blocks
+- Single persistent curl_cffi.requests.AsyncSession (connection pool reuse,
+  Chrome TLS / JA3 / HTTP2 fingerprint impersonation)
 - Per-domain rate limiting  (≥ 2 s between requests to the same host)
 - Exponential backoff + random jitter retry (max 3 retries) on
   network timeouts and 5xx HTTP errors
@@ -23,7 +23,9 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.errors import RequestsError
+from curl_cffi.requests.exceptions import HTTPError, Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -31,26 +33,16 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Realistic desktop Chrome headers — mimic a browser to avoid 403 blocks
-# from anti-bot systems on enterprise retail sites (e.g. FNAC.pt).
+IMPERSONATE_TARGET: str = "chrome120"
+
+# Realistic desktop Chrome headers — supplemented by curl_cffi's built-in
+# browser impersonation headers to pass enterprise anti-bot checks.
 BROWSER_HEADERS: dict[str, str] = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/128.0.0.0 Safari/537.36"
-    ),
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"macOS"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
 }
 
@@ -59,7 +51,7 @@ MAX_RETRIES: int = 3
 BACKOFF_BASE: float = 1.5         # seconds — exponential base
 BACKOFF_MAX: float = 30.0         # seconds — cap on any single delay
 JITTER_RANGE: float = 0.5         # ± seconds of random jitter added to delay
-REQUEST_TIMEOUT: float = 15.0     # seconds before httpx raises TimeoutException
+REQUEST_TIMEOUT: float = 15.0     # seconds before curl_cffi raises Timeout
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +69,9 @@ def with_retries(
     retry logic.
 
     Retries are triggered by:
-    - ``httpx.TimeoutException``   — any flavour of network timeout
-    - ``httpx.HTTPStatusError``    — when the response status is 5xx
+    - ``Timeout``                  — any flavour of network timeout
+    - ``HTTPError`` / ``RequestsError`` — when the response status is 5xx
+      or a timeout curl error code (28) occurs
 
     Parameters
     ----------
@@ -98,7 +91,7 @@ def with_retries(
                 try:
                     return await fn(*args, **kwargs)
 
-                except httpx.TimeoutException as exc:
+                except Timeout as exc:
                     last_exception = exc
                     logger.warning(
                         "Timeout on attempt %d/%d: %s",
@@ -107,18 +100,34 @@ def with_retries(
                         exc,
                     )
 
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code < 500:
-                        # 4xx errors are the caller's fault — do not retry
+                except (HTTPError, RequestsError) as exc:
+                    response = getattr(exc, "response", None)
+                    status_code = getattr(response, "status_code", None)
+                    curl_code = getattr(exc, "code", None)
+
+                    if status_code is not None:
+                        if status_code < 500:
+                            # 4xx errors are not retryable
+                            raise
+                        last_exception = exc
+                        logger.warning(
+                            "HTTP %s on attempt %d/%d: %s",
+                            status_code,
+                            attempt + 1,
+                            max_retries + 1,
+                            exc,
+                        )
+                    elif curl_code == 28:  # CURLE_OPERATION_TIMEDOUT
+                        last_exception = exc
+                        logger.warning(
+                            "Curl timeout on attempt %d/%d: %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            exc,
+                        )
+                    else:
+                        # Non-timeout request error (e.g. DNS failure) — do not retry
                         raise
-                    last_exception = exc
-                    logger.warning(
-                        "HTTP %s on attempt %d/%d: %s",
-                        exc.response.status_code,
-                        attempt + 1,
-                        max_retries + 1,
-                        exc,
-                    )
 
                 if attempt < max_retries:
                     raw_delay = backoff_base * (2 ** attempt)
@@ -147,12 +156,13 @@ def with_retries(
 
 class ScraperClient:
     """
-    Async HTTP client for Allection scraping operations.
+    Async HTTP client for Allection scraping operations using curl_cffi
+    for Chrome TLS fingerprint impersonation.
 
     Lifecycle
     ---------
     Use as an async context manager to guarantee the underlying
-    ``httpx.AsyncClient`` (and its connection pool) is opened and closed
+    ``AsyncSession`` (and its connection pool) is opened and closed
     cleanly::
 
         async with ScraperClient() as client:
@@ -177,11 +187,11 @@ class ScraperClient:
         self._timeout = timeout
         self._domain_last_called: dict[str, float] = {}
 
-        self._client = httpx.AsyncClient(
+        self._client = AsyncSession(
+            impersonate=IMPERSONATE_TARGET,
             headers=BROWSER_HEADERS,
-            timeout=httpx.Timeout(self._timeout),
-            follow_redirects=True,
-            http2=True,
+            timeout=self._timeout,
+            allow_redirects=True,
         )
 
     # ------------------------------------------------------------------
@@ -195,8 +205,8 @@ class ScraperClient:
         await self.aclose()
 
     async def aclose(self) -> None:
-        """Close the underlying HTTP client and release all connections."""
-        await self._client.aclose()
+        """Close the underlying HTTP session and release all connections."""
+        await self._client.close()
 
     # ------------------------------------------------------------------
     # Rate limiting
@@ -250,7 +260,7 @@ class ScraperClient:
             response text.
         **kwargs:
             Any additional keyword arguments are forwarded verbatim to
-            ``httpx.AsyncClient.get`` (e.g. ``params``, ``headers``).
+            ``AsyncSession.get`` (e.g. ``params``, ``headers``).
 
         Returns
         -------
@@ -261,14 +271,9 @@ class ScraperClient:
 
         Raises
         ------
-        httpx.TimeoutException
-            Re-raised after all retry attempts are exhausted.
-        httpx.HTTPStatusError
-            Re-raised immediately for 4xx errors; re-raised after all
-            retry attempts are exhausted for 5xx errors.
-        httpx.RequestError
-            Re-raised immediately for non-timeout request errors (e.g.
-            DNS failure, connection refused).
+        curl_cffi.requests.errors.RequestsError
+            Re-raised after all retry attempts are exhausted (for timeouts
+            or 5xx errors) or immediately for 4xx / non-timeout errors.
         """
         domain = self._extract_domain(url)
         await self._enforce_rate_limit(domain)
