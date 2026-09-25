@@ -1,0 +1,12 @@
+# Allection web scraping microservice — Python dependencies
+# Pin minor versions for reproducible builds; bump intentionally.
+
+# ── Web framework & server ────────────────────────────────────────────────
+fastapi==0.115.12
+uvicorn[standard]==0.34.3        # [standard] pulls in uvloop + httptools
+
+# ── HTTP client (async, used by ScraperClient) ────────────────────────────
+httpx==0.28.1
+
+# ── Data validation (used by ScrapedItem model) ───────────────────────────
+pydantic==2.13.5

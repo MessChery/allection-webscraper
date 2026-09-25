@@ -1,0 +1,57 @@
+# =============================================================================
+# Allection scraping microservice — Docker Compose
+# Usage:
+#   docker compose up -d          # start in background
+#   docker compose logs -f        # stream logs
+#   docker compose down           # stop and remove containers
+# =============================================================================
+
+services:
+  allection-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: allection-scraper:latest
+
+    container_name: allection-scraper
+
+    # ── Port mapping ─────────────────────────────────────────────────────
+    # host:container — exposes the API on the VM's port 8000
+    ports:
+      - "8000:8000"
+
+    # ── Restart policy ────────────────────────────────────────────────────
+    # "always" ensures the service recovers automatically after:
+    #   - container crash
+    #   - Docker daemon restart
+    #   - VM reboot
+    restart: always
+
+    # ── Environment ───────────────────────────────────────────────────────
+    environment:
+      # Force unbuffered output so logs appear immediately in `docker logs`
+      - PYTHONUNBUFFERED=1
+      # Set log level (override with LOG_LEVEL=DEBUG for troubleshooting)
+      - LOG_LEVEL=INFO
+
+    # ── Healthcheck ───────────────────────────────────────────────────────
+    # Docker marks the container healthy only after /health returns 200.
+    # Compose and orchestrators (Swarm, etc.) use this to gate dependencies.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    # ── Resource limits (tune to your VM spec) ────────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
