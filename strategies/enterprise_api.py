@@ -140,13 +140,34 @@ class FnacPtScraper(BaseScraperStrategy):
         """
         url = self._build_url(query)
         logger.info("FnacPtScraper searching '%s' on %s", query, self.domain)
+
+        # Warm up session to acquire initial cookies from the homepage
+        warmup_url = f"{self._base_url}/"
+        logger.debug("FnacPtScraper warming up session via GET %s", warmup_url)
+        await self._client.get(
+            warmup_url,
+            as_json=False,
+            headers={
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-User": "?1",
+            },
+        )
+
         logger.debug("FnacPtScraper GET %s", url)
 
         # as_json=False → returns raw HTML text
         html: str = await self._client.get(
             url,
             as_json=False,
-            headers={"Referer": f"{self._base_url}/"},
+            headers={
+                "Referer": f"{self._base_url}/",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-User": "?1",
+            },
         )
         print(f"DEBUG: Fetched HTML length: {len(html)}")
 

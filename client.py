@@ -280,6 +280,9 @@ class ScraperClient:
 
         logger.debug("GET %s", url)
         response = await self._client.get(url, **kwargs)
+        if response.status_code == 403:
+            print(f"DEBUG 403 Body: {response.text[:500]}")
+            print(f"DEBUG 403 Headers: {dict(response.headers)}")
         response.raise_for_status()
 
         if as_json:
