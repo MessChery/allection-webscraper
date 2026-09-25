@@ -25,7 +25,17 @@ RUN addgroup --system appgroup && \
 # ── Working directory ─────────────────────────────────────────────────────
 WORKDIR /app
 
-# ── Dependencies (own layer — cached unless requirements.txt changes) ─────
+# ── System build dependencies ─────────────────────────────────────────────
+# lxml requires C headers for libxml2 and libxslt to compile its extension.
+# gcc and the -dev packages are only needed at build time; the final image
+# still inherits them but the apt cache is purged to minimise layer size.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libxml2-dev \
+    libxslt-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python dependencies (own layer — cached unless requirements.txt changes)
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip && \
