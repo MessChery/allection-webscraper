@@ -1,36 +1,33 @@
 """
 strategies/enterprise_api.py
 -----------------------------
-FNAC.pt HTML scraping strategy for the Allection microservice.
+FNAC.pt headless-browser + HTML scraping strategy for the Allection
+microservice.
 
-Network Analysis Finding
-------------------------
-FNAC.pt uses ASP.NET Server-Side Rendering — search results are delivered
-as raw HTML via ResultList.aspx rather than a clean JSON payload. This
-strategy parses the response DOM using BeautifulSoup + lxml.
+Network & WAF Analysis Finding
+------------------------------
+FNAC.pt uses ASP.NET Server-Side Rendering protected by DataDome's JavaScript
+challenge WAF.  Pure HTTP clients cannot execute the JS challenge needed to
+acquire the ``datadome`` clearance cookie.  This strategy launches a headless
+Chromium instance via Playwright to execute the page JS, waits for the DOM to
+settle, extracts the rendered HTML, and parses product cards using
+BeautifulSoup + lxml.
 
 Search endpoint:
     GET https://www.fnac.pt/SearchResult/ResultList.aspx
             ?Search={query}&sft=1&sa=0
 
-How to update the CSS selectors
----------------------------------
-1. Open https://www.fnac.pt/SearchResult/ResultList.aspx?Search=headphones
-   in Chrome / Firefox.
-2. Open DevTools → Elements (Inspector) tab.
-3. Find the repeating product card container — right-click → "Copy selector".
-4. Replace the selector strings marked  # ← CSS SELECTOR  below.
-
-Phase 4 (revised) of the Allection scraping architecture.
+Phase 4 (Playwright revision) of the Allection scraping architecture.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup, Tag
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
 from base_scraper import BaseScraperStrategy
 from client import ScraperClient
@@ -46,6 +43,13 @@ _DOMAIN = "fnac.pt"
 _BASE_URL = f"https://www.{_DOMAIN}"
 _DEFAULT_CURRENCY = "EUR"   # FNAC.pt trades exclusively in EUR
 
+_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/128.0.0.0 Safari/537.36"
+)
+_DESKTOP_VIEWPORT = {"width": 1366, "height": 768}
+
 # Search URL template
 # sft=1  → search in all categories
 # sa=0   → sort by relevance
@@ -57,50 +61,31 @@ _SEARCH_URL = (
 # ---------------------------------------------------------------------------
 # CSS selector constants
 # ---------------------------------------------------------------------------
-# All selectors below are educated placeholders derived from common FNAC.pt
-# DOM patterns.  Replace each one after inspecting the live page in DevTools.
-# Every constant is annotated with  # ← CSS SELECTOR  for quick discovery.
 
 # Outer container — one per product card on the results page
 _SEL_PRODUCT_CARD = ".Article-item"                  # ← CSS SELECTOR
-#   alt candidates: "article.product-item", ".product-list .item"
 
 # Product title — the human-readable name of the product
 _SEL_TITLE = ".Article-title"                       # ← CSS SELECTOR
-#   alt candidates: ".product-title", "h3.title", "[itemprop='name']"
 
 # Price — the displayed sale price (may include currency symbol)
 _SEL_PRICE = ".userPrice"                           # ← CSS SELECTOR
-#   alt candidates: ".Article-price", "[itemprop='price']", ".price-value"
 
 # Canonical product URL — the <a> that wraps the product title.
 # The href is safely nested inside the title anchor, bypassing JS-obfuscated links.
-_SEL_URL = "a.Article-title"                       # ← CSS SELECTOR (confirmed via live DOM)
-#   alt candidates: "a.product-link", "a[href*='/p/']"
+_SEL_URL = "a.Article-title"                        # ← CSS SELECTOR (confirmed via live DOM)
 
 
 class FnacPtScraper(BaseScraperStrategy):
     """
-    Concrete scraping strategy for FNAC.pt using HTML (SSR) parsing.
-
-    Sends a GET request to FNAC.pt's search results page and extracts
-    product cards from the HTML response using BeautifulSoup + lxml.
+    Concrete scraping strategy for FNAC.pt using Playwright (headless Chromium)
+    + BeautifulSoup HTML parsing to bypass DataDome JS challenges.
 
     Parameters
     ----------
     client:
-        An active :class:`ScraperClient` instance.  The caller manages
-        its lifecycle.
-
-    Example
-    -------
-    ::
-
-        async with ScraperClient() as client:
-            scraper = FnacPtScraper(client)
-            results = await scraper.search("sony headphones")
-            for item in results:
-                print(item.item_title, item.price, item.currency)
+        An active :class:`ScraperClient` instance (kept in the constructor
+        signature for uniform strategy initialization).
     """
 
     def __init__(self, client: ScraperClient) -> None:
@@ -114,63 +99,62 @@ class FnacPtScraper(BaseScraperStrategy):
 
     async def search(self, query: str) -> list[ScrapedItem]:
         """
-        Search FNAC.pt for products matching *query* via HTML parsing.
+        Search FNAC.pt for products matching *query* using headless Chromium.
 
-        Fetches the SSR search results page and parses product cards from
-        the DOM.  Individual card parse failures are isolated — one broken
-        card never prevents the rest from being returned.
-
-        Parameters
-        ----------
-        query:
-            Product search term (e.g. ``"sony headphones"``).
-
-        Returns
-        -------
-        list[ScrapedItem]
-            Validated items; may be empty if no results or all cards were
-            unparseable.
-
-        Raises
-        ------
-        httpx.HTTPStatusError
-            Re-raised from ScraperClient for 4xx / unrecoverable 5xx.
-        httpx.RequestError
-            Re-raised for network-level failures.
+        Launches a headless Chromium browser via Playwright, creates a
+        realistic desktop browser context, navigates to the search URL,
+        waits for the network to settle or for ``.Article-item`` cards to
+        render, extracts ``page.content()``, closes the browser, and parses
+        the rendered HTML via :meth:`_parse_html`.
         """
         url = self._build_url(query)
-        logger.info("FnacPtScraper searching '%s' on %s", query, self.domain)
+        logger.info("FnacPtScraper searching '%s' on %s via Playwright", query, self.domain)
+        logger.debug("FnacPtScraper navigating to %s", url)
 
-        # Warm up session to acquire initial cookies from the homepage
-        warmup_url = f"{self._base_url}/"
-        logger.debug("FnacPtScraper warming up session via GET %s", warmup_url)
-        await self._client.get(
-            warmup_url,
-            as_json=False,
-            headers={
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-User": "?1",
-            },
-        )
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context(
+                    viewport=_DESKTOP_VIEWPORT,
+                    user_agent=_DESKTOP_USER_AGENT,
+                    locale="pt-PT",
+                )
+                page = await context.new_page()
 
-        logger.debug("FnacPtScraper GET %s", url)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
-        # as_json=False → returns raw HTML text
-        html: str = await self._client.get(
-            url,
-            as_json=False,
-            headers={
-                "Referer": f"{self._base_url}/",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-User": "?1",
-            },
-        )
+                try:
+                    await page.wait_for_selector(_SEL_PRODUCT_CARD, timeout=15_000)
+                except PlaywrightTimeoutError:
+                    logger.debug(
+                        "Timed out waiting for %r; falling back to networkidle.",
+                        _SEL_PRODUCT_CARD,
+                    )
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10_000)
+                    except PlaywrightTimeoutError:
+                        pass
+
+                html: str = await page.content()
+            finally:
+                await browser.close()
+
         print(f"DEBUG: Fetched HTML length: {len(html)}")
+        return self._parse_html(html)
 
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _build_url(self, query: str) -> str:
+        """Build the fully-qualified FNAC.pt search URL for *query*."""
+        return _SEARCH_URL.format(query=quote_plus(query))
+
+    def _parse_html(self, html: str) -> list[ScrapedItem]:
+        """
+        Extract product cards from *html* and map valid entries to
+        :class:`ScrapedItem` instances.
+        """
         cards = self._extract_cards(html)
         logger.debug(
             "FnacPtScraper found %d product card(s) on %s",
@@ -191,33 +175,9 @@ class FnacPtScraper(BaseScraperStrategy):
         )
         return items
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _build_url(self, query: str) -> str:
-        """Build the fully-qualified FNAC.pt search URL for *query*."""
-        return _SEARCH_URL.format(query=quote_plus(query))
-
     def _extract_cards(self, html: str) -> list[Tag]:
         """
         Parse *html* with BeautifulSoup and return all product card tags.
-
-        Uses the ``lxml`` parser for speed and lenient error recovery on
-        malformed HTML (common on large retail sites).
-
-        Returns an empty list if the selector finds nothing, so the caller
-        always receives a list.
-
-        Developer note
-        --------------
-        If this method consistently returns ``[]`` on a live page, the
-        selector ``_SEL_PRODUCT_CARD`` needs updating.  To diagnose:
-
-        1. Save the raw HTML to a file:
-           ``with open("debug.html", "w") as f: f.write(html)``
-        2. Open it in a browser and inspect the product card elements.
-        3. Update ``_SEL_PRODUCT_CARD`` accordingly.
         """
         soup = BeautifulSoup(html, "lxml")
         cards = soup.select(_SEL_PRODUCT_CARD)   # ← CSS SELECTOR applied here
@@ -237,24 +197,6 @@ class FnacPtScraper(BaseScraperStrategy):
         """
         Extract product data from a single BeautifulSoup ``Tag`` and map
         it to a :class:`ScrapedItem`.
-
-        Returns ``None`` (with a warning) if any required field is missing
-        or fails validation, so one broken card never kills the entire batch.
-
-        CSS selectors used
-        ------------------
-        - Title  : ``_SEL_TITLE``   # ← CSS SELECTOR
-        - Price  : ``_SEL_PRICE``   # ← CSS SELECTOR
-        - URL    : ``_SEL_URL``     # ← CSS SELECTOR
-
-        Parameters
-        ----------
-        card:
-            A single ``<li>`` / ``<article>`` tag representing one product.
-
-        Returns
-        -------
-        ScrapedItem | None
         """
         try:
             # ── Title ──────────────────────────────────────────────────
@@ -273,9 +215,7 @@ class FnacPtScraper(BaseScraperStrategy):
             price = self._parse_price(price_tag.get_text(strip=True))
 
             # ── URL ────────────────────────────────────────────────────
-            # Primary: dedicated link wrapper selector
             url_tag = card.select_one(_SEL_URL)       # ← CSS SELECTOR
-            # Fallback: any <a href> inside the card
             if url_tag is None:
                 url_tag = card.find("a", href=True)
 
@@ -312,29 +252,7 @@ class FnacPtScraper(BaseScraperStrategy):
     def _parse_price(raw: str) -> float:
         """
         Normalise a raw price string scraped from the DOM and return a float.
-
-        Handles common European formatting patterns found on FNAC.pt:
-
-        - Currency symbols  : "€ 109,99"  → 109.99
-        - Non-breaking spaces: "109\xa099" → 109.99
-        - Comma decimals     : "109,99"    → 109.99
-        - Dot thousands      : "1.099,99"  → 1099.99
-
-        Parameters
-        ----------
-        raw:
-            The raw text content of the price element (e.g. ``"€ 109,99"``).
-
-        Returns
-        -------
-        float
-
-        Raises
-        ------
-        ValueError
-            If the cleaned string cannot be converted to a float.
         """
-        # Strip currency symbols, whitespace, non-breaking spaces
         cleaned = (
             raw
             .replace("€", "")
@@ -343,13 +261,9 @@ class FnacPtScraper(BaseScraperStrategy):
             .strip()
         )
 
-        # European format: thousands separator = ".", decimal separator = ","
-        # e.g. "1.099,99" → "1099.99"
         if "," in cleaned and "." in cleaned:
-            # Both present → dot is thousands, comma is decimal
             cleaned = cleaned.replace(".", "").replace(",", ".")
         elif "," in cleaned:
-            # Only comma → it's the decimal separator
             cleaned = cleaned.replace(",", ".")
 
         return float(cleaned)

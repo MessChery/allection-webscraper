@@ -16,7 +16,8 @@ LABEL maintainer="Allection Engineering <eng@allection.app>" \
 # - Disable .pyc file generation (saves space, not needed in containers)
 # - Force unbuffered stdout/stderr so logs appear immediately in Docker
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Create a non-root user for the application process
 RUN addgroup --system appgroup && \
@@ -42,6 +43,8 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+RUN playwright install --with-deps chromium
 
 # ── Application source ────────────────────────────────────────────────────
 # Copy only the files the application needs at runtime.
